@@ -1,5 +1,6 @@
 import type { EngineInterface, Register } from 'claude-code'
 import {
+  type AgentFile,
   type Attempt,
   CONFIG_PATH,
   type Choice,
@@ -8,6 +9,8 @@ import {
   isTuner,
   parseConfig,
   prune,
+  readAgentFile,
+  starterConfig,
   taskKeyOf,
 } from './route.ts'
 
@@ -105,12 +108,43 @@ const label = (choice: Choice): string =>
 
 const reported = new Set<string>()
 
+/** The project's own agents, from `.claude/agents/*.md`; none when the folder is missing. */
+const projectAgents = async ($: EngineInterface, root: string): Promise<AgentFile[]> => {
+  const dir = join(root, '.claude/agents')
+  const files = (await $.fs.list(dir).catch(() => [])).filter(f => f.name.endsWith('.md')).sort((a, b) => a.name.localeCompare(b.name))
+  const agents: AgentFile[] = []
+  for (const f of files) {
+    const text = await $.fs.read(`${dir}/${f.name}`).catch(() => undefined)
+    if (text !== undefined) agents.push(readAgentFile(text, f.name))
+  }
+  return agents
+}
+
+/**
+ * Hands the fitting of the config to Claude: a turn of its own, once the
+ * session is idle. The engine refuses a prompt submitted while the command's
+ * hook runs, so it is submitted from a timer, after the command has answered.
+ * False when the instructions cannot be read.
+ */
+const adjust = async ($: EngineInterface): Promise<boolean> => {
+  let text: string
+  try {
+    text = await $.fs.read(`${$.plugin.root}/prompts/adjust.md`)
+  } catch {
+    return false
+  }
+  $.clock.after(0, () => {
+    void $.prompt.submit({ text }).catch(err => $.ui.log(`agent-model-router: adjustment not started: ${(err as Error).message}`))
+  })
+  return true
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'model-router',
-      description: 'Show agent-model-router status, or create its config with "init"',
-      argumentHint: '[status|init]',
+      description: 'Show agent-model-router status; "init" creates the config, "adjust" fits it to this project',
+      argumentHint: '[status|init|adjust]',
     })
     return next(e)
   })
@@ -181,11 +215,25 @@ export const register: Register = on => {
   on('command.run', { command: 'model-router' }, async ($, e) => {
     const loaded = await loadConfig($)
 
-    if (e.args.trim() === 'init') {
-      if (loaded.config || loaded.error) return { text: `${loaded.path} already exists; edit it there.` }
-      if (!(await staysInside($, await $.session.root(), CONFIG_PATH))) return { text: `${loaded.path} resolves outside the project; not written.` }
-      await $.fs.write(loaded.path, await $.fs.read(`${$.plugin.root}/examples/agent-model-router.json`))
-      return { text: `Created ${loaded.path}. Edit the agent names and models to match your .claude/agents/.` }
+    const arg = e.args.trim()
+    if (arg === 'init') {
+      if (loaded.config || loaded.error) return { text: `${loaded.path} already exists. Run /${COMMAND} adjust to fit it to this project.` }
+      const root = await $.session.root()
+      if (!(await staysInside($, root, CONFIG_PATH))) return { text: `${loaded.path} resolves outside the project; not written.` }
+      const agents = await projectAgents($, root)
+      await $.fs.write(loaded.path, `${JSON.stringify(starterConfig(agents), null, 2)}\n`)
+      const names = ['Explore', ...agents.map(a => a.name)].join(', ')
+      const adjusting = await adjust($)
+      return {
+        text: `Created ${loaded.path} with ${names}. Routing is on.${adjusting
+          ? ' Claude now fits task names, rules and context to this project.'
+          : ` Run /${COMMAND} adjust in an interactive session to fit it to this project.`}`,
+      }
+    }
+
+    if (arg === 'adjust') {
+      if (!loaded.config && !loaded.error) return { text: `No config yet. Run /${COMMAND} init first.` }
+      return { text: (await adjust($)) ? `Claude now fits ${loaded.path} to this project.` : 'Could not start the adjustment here; run it in an interactive session.' }
     }
 
     const lines = [`agent-model-router: ${loaded.path}`]

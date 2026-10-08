@@ -30,16 +30,24 @@ Requires Claude Code 2.1.293 or later (function hooks).
 /model-router init
 ```
 
-This creates `.claude/agent-model-router.json` from the example. Then:
+This does two things, with nothing to edit by hand:
 
-1. Replace the example agents with yours: the names in `.claude/agents/` (or built-in types such as `Explore`). Remove the ones you do not have.
-2. Set `escalation.taskKey` to the way your project names its tasks, in its own language (`bloc 3`, `ticket 42`, `chapter 2`).
-3. Tell Claude to name the task in the `description` of each delegation. See [How a retry is recognized](#how-a-retry-is-recognized).
-4. Check what is active:
+1. **Writes `.claude/agent-model-router.json`** from your project: one entry per agent in `.claude/agents/`, on the model its frontmatter names, plus `Explore` on `haiku`. An agent whose model is not on the ladder (`fable`, `inherit`) keeps its own model: the table never moves it. Routing is on from here, with a working config.
+2. **Asks Claude to fit it to the project**, in a turn of its own right after the command. Claude reads your agents and `CLAUDE.md`, then sets `escalation.taskKey` to the way your tasks are named (in their language: `bloc 3`, `ticket 42`), adds rules only where the project marks a kind of task as harder, and points `context` at the files where outcomes are recorded. It then proposes one line for your `CLAUDE.md` so that each delegation names its task (see [How a retry is recognized](#how-a-retry-is-recognized)), and asks before writing it.
+
+Run the second step again at any time, for example after adding an agent:
+
+```
+/model-router adjust
+```
+
+`init` never overwrites an existing config. Check what is active with:
 
 ```
 /model-router
 ```
+
+Claude Code asks your permission before Claude edits a file under `.claude/`; accept it to let the fitting apply. In a headless `claude -p` run nobody can accept, so Claude only reports the changes it proposes: run `/model-router adjust` later in an interactive session.
 
 ## Configuration
 

@@ -147,6 +147,42 @@ export const stepUp = (model: string, ladder: readonly string[]): string | undef
   return ladder[Math.min(r + 1, ladder.length - 1)]
 }
 
+export type AgentFile = { name: string; model?: string }
+
+/** Name and model from an agent file's frontmatter; the file name when it has no `name`. */
+export const readAgentFile = (text: string, fileName: string): AgentFile => {
+  const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1] ?? ''
+  const field = (key: string): string | undefined =>
+    new RegExp(`^${key}:\\s*["']?([^"'\\r\\n]+?)["']?\\s*$`, 'm').exec(front)?.[1]
+  return { name: field('name') ?? fileName.replace(/\.md$/, ''), model: field('model') }
+}
+
+/**
+ * The config `/model-router init` writes: the project's own agents, each on
+ * its frontmatter model when that model is on the default ladder. A model off
+ * the ladder (`fable`, `inherit`) is left to the agent, so the table never
+ * moves an agent to another model, and `maxModel` never caps it down.
+ */
+export const starterConfig = (agents: readonly AgentFile[]): object => {
+  const ladder = ['haiku', 'sonnet', 'opus']
+  const table: Record<string, { model?: string }> = { Explore: { model: 'haiku' } }
+  for (const a of agents) {
+    if (isTuner(a.name)) continue
+    table[a.name] = a.model && rankOf(a.model, ladder) >= 0 ? { model: a.model } : {}
+  }
+  return {
+    enabled: true,
+    ladder,
+    maxModel: 'opus',
+    agents: table,
+    tags: true,
+    escalation: { enabled: true, windowMinutes: 240 },
+    journal: { enabled: true, path: JOURNAL_PATH, maxEntries: 5000 },
+    notify: true,
+    context: [],
+  }
+}
+
 export const isTuner = (agent: string): boolean => agent === TUNER || agent.endsWith(`:${TUNER}`)
 
 export const entryFor = (agent: string, cfg: Config): AgentEntry | undefined =>

@@ -1,6 +1,6 @@
 import type { AgentSpawnInput, On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
-import { decide, parseConfig, rankOf, taskKeyOf } from './route.ts'
+import { decide, parseConfig, rankOf, readAgentFile, taskKeyOf } from './route.ts'
 
 const ROOT = '/proj'
 const CONFIG = `${ROOT}/.claude/agent-model-router.json`
@@ -35,10 +35,16 @@ const world = (on: On, config?: object | string, options: Options = {}) => {
     links.has(path) || names().some(n => n === path || n.startsWith(`${path}/`))
   if (config !== undefined) files.set(CONFIG, typeof config === 'string' ? config : JSON.stringify(config))
   const toasts: string[] = []
+  const prompts: string[] = []
+  on('prompt.submit', ($, e) => {
+    prompts.push(e.text)
+    return { text: e.text }
+  })
   const spawned: (string | undefined)[] = []
   on('session.root', () => ({ value: ROOT }))
   on('fs.exists', ($, e) => ({ value: files.has(e.path) }))
   on('fs.read', ($, e) => {
+    if (e.path.endsWith('/prompts/adjust.md')) return { value: 'ADJUST THE CONFIG' }
     const text = files.get(e.path)
     if (text === undefined) throw new Error(`ENOENT ${e.path}`)
     return { value: text }
@@ -60,7 +66,11 @@ const world = (on: On, config?: object | string, options: Options = {}) => {
     toasts.push(e.text)
     return { value: undefined }
   })
-  on('ui.log', () => ({ value: undefined }))
+  const logs: string[] = []
+  on('ui.log', ($, e) => {
+    logs.push(e.text)
+    return { value: undefined }
+  })
   on('agent.spawn', ($, e) => {
     // A model the account cannot use: the spawn is refused.
     if (options.unavailable && e.model?.includes(options.unavailable)) return { deny: `model ${e.model} is not available` }
@@ -69,8 +79,8 @@ const world = (on: On, config?: object | string, options: Options = {}) => {
     return { model, agentId: `agent-${spawned.length}` }
   })
   mock.store(on, options.store)
-  mock.clock(on, { now: Date.UTC(2026, 9, 9) })
-  return { files, links, dangling, toasts, spawned }
+  const clock = mock.clock(on, { now: Date.UTC(2026, 9, 9) })
+  return { files, links, dangling, toasts, spawned, prompts, clock, logs }
 }
 
 // What the Agent tool fills in before `agent.spawn` is raised.
@@ -200,6 +210,75 @@ describe('retry history', () => {
     await Promise.all([16, 17, 18].map(n => $.agent.spawn(call({ subagentType: 'writer', prompt: `Write block ${n}`, description: 'b' }))))
     for (const n of [16, 17, 18]) await $.agent.spawn(call({ subagentType: 'writer', prompt: `Redo block ${n}`, description: 'b' }))
     expect(w.spawned).toEqual(['sonnet', 'sonnet', 'sonnet', 'opus', 'opus', 'opus'])
+  })
+})
+
+describe('/model-router init', () => {
+  // The prompt is submitted from a timer, once the command has answered.
+  const settle = async (w: ReturnType<typeof world>) => {
+    await w.clock.advance(1)
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+  const agent = (name: string, model?: string): string =>
+    `---\nname: ${name}\ndescription: x\n${model ? `model: ${model}\n` : ''}---\n\nBody.\n`
+
+  test('builds the table from the project agents, then hands the fitting to Claude', async ($, on) => {
+    const w = world(on)
+    w.files.set(`${ROOT}/.claude/agents/writer.md`, agent('writer', 'sonnet'))
+    w.files.set(`${ROOT}/.claude/agents/director.md`, agent('director', 'claude-opus-5-5'))
+    w.files.set(`${ROOT}/.claude/agents/notes.txt`, 'not an agent')
+    const r = await $.command.run({ command: 'model-router', args: 'init' })
+    const cfg = parseConfig(w.files.get(CONFIG) ?? '')
+    expect(Object.keys(cfg.agents)).toEqual(['Explore', 'director', 'writer'])
+    expect(cfg.agents.writer?.model).toBe('sonnet')
+    expect(cfg.agents.director?.model).toBe('claude-opus-5-5')
+    expect(cfg.escalation.taskKey).toBeUndefined()
+    expect(r.text).toContain('Explore, director, writer')
+    await settle(w)
+    expect(w.prompts).toEqual(['ADJUST THE CONFIG'])
+    expect(w.logs).toEqual([])
+  })
+
+  test('an agent on a model off the ladder keeps it, uncapped', async ($, on) => {
+    const w = world(on)
+    w.files.set(`${ROOT}/.claude/agents/poet.md`, agent('poet', 'fable'))
+    w.files.set(`${ROOT}/.claude/agents/helper.md`, agent('helper', 'inherit'))
+    await $.command.run({ command: 'model-router', args: 'init' })
+    const cfg = parseConfig(w.files.get(CONFIG) ?? '')
+    expect(cfg.agents.poet).toEqual({ model: undefined, rules: [] })
+    expect(cfg.agents.helper).toEqual({ model: undefined, rules: [] })
+    await $.agent.spawn(call({ subagentType: 'poet', prompt: 'Write a poem', description: 'poem' }))
+    expect(w.spawned).toEqual([undefined])
+  })
+
+  test('without agents the config still works', async ($, on) => {
+    const w = world(on)
+    await $.command.run({ command: 'model-router', args: 'init' })
+    expect(Object.keys(parseConfig(w.files.get(CONFIG) ?? '').agents)).toEqual(['Explore'])
+  })
+
+  test('an existing config is never overwritten; adjust refits it', async ($, on) => {
+    const w = world(on, BASE)
+    const before = w.files.get(CONFIG)
+    const r = await $.command.run({ command: 'model-router', args: 'init' })
+    expect(r.text).toContain('adjust')
+    expect(w.files.get(CONFIG)).toBe(before)
+    await $.command.run({ command: 'model-router', args: 'adjust' })
+    await settle(w)
+    expect(w.prompts).toEqual(['ADJUST THE CONFIG'])
+  })
+
+  test('adjust without a config asks for init first', async ($, on) => {
+    const w = world(on)
+    const r = await $.command.run({ command: 'model-router', args: 'adjust' })
+    expect(r.text).toContain('init')
+    await settle(w)
+    expect(w.prompts).toEqual([])
+  })
+
+  test('frontmatter is read, quotes and all, with the file name as fallback', () => {
+    expect(readAgentFile('---\nname: "writer"\nmodel: \'opus\'\n---\nx', 'w.md')).toEqual({ name: 'writer', model: 'opus' })
+    expect(readAgentFile('no frontmatter', 'editor.md')).toEqual({ name: 'editor', model: undefined })
   })
 })
 
