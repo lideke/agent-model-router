@@ -30,7 +30,12 @@ Requires Claude Code 2.1.293 or later (function hooks).
 /model-router init
 ```
 
-This creates `.claude/agent-model-router.json` from the example. Edit the agent names to match your `.claude/agents/` (or built-in types such as `Explore`). Check what is active with:
+This creates `.claude/agent-model-router.json` from the example. Then:
+
+1. Replace the example agents with yours: the names in `.claude/agents/` (or built-in types such as `Explore`). Remove the ones you do not have.
+2. Set `escalation.taskKey` to the way your project names its tasks, in its own language (`bloc 3`, `ticket 42`, `chapter 2`).
+3. Tell Claude to name the task in the `description` of each delegation. See [How a retry is recognized](#how-a-retry-is-recognized).
+4. Check what is active:
 
 ```
 /model-router
@@ -89,6 +94,39 @@ Agent names match the spawned type exactly (`agent-model-router:model-tuner`) or
 If the spawn is refused on the chosen model (for example a model your account does not have), the agent runs on the model it would have used without the plugin, and a toast says so. The default ladder stops at `opus`, so escalation never picks a model you did not list.
 
 Forks always inherit their parent's model, and workflow agents cannot be rewritten: the plugin leaves both alone.
+
+## How a retry is recognized
+
+You do not write delegations; Claude does. When the main session hands work to a subagent, it calls the Agent tool with two texts:
+
+- `description`: a title of a few words, such as `Block 3 episode 2`;
+- `prompt`: the full instructions, which often repeat context such as the list of tasks already done.
+
+The plugin computes a task key for each spawn:
+
+1. With `escalation.taskKey`, the key is the **first** match of that pattern, searched in the `description` first, then in the `prompt`.
+2. With no match, or no `taskKey`, the key is the whole `description`.
+
+The key is prefixed with the agent name. Two spawns with the same key, inside `windowMinutes`, count as a retry: the second runs one model higher.
+
+The key is only as good as the `description`. With `"taskKey": "block\\s*\\d+"`:
+
+| Delegation | Key | Result |
+|---|---|---|
+| description `Block 3 episode 2` | `writer\|block 3` | Correct |
+| description `Write narration`, prompt `Done so far: Block 1, Block 2. Now write Block 3.` | `writer\|block 1` | Wrong: the first match in the prompt is a finished task. A later spawn about block 1 escalates for no reason |
+| description `Write narration`, no match in the prompt | `writer\|write narration` | Every writer spawn looks like the same task, so all but the first escalate |
+
+So tell Claude to put the task name in the `description`. Add a line such as this one to your project's `CLAUDE.md`, next to its delegation rules:
+
+> The `description` of each Agent call names the task and its scope, for example `Block 3 episode 2`.
+
+Things to watch:
+
+- **Same names in two scopes.** `Block 3` of episode 1 and `Block 3` of episode 2 share a key. Working on both within `windowMinutes` makes the second one escalate. Shorten the window, or put the scope in the pattern (`episode\\s*\\d+\\s*block\\s*\\d+`) and in the descriptions.
+- **Rules read the prompt too.** A rule matches the description and the prompt together, so a word that appears in the repeated context (`intro` in a list of finished blocks) triggers it on every spawn. Match a phrase that only appears in the request itself (`write the intro`).
+- **Accented words.** In JavaScript regular expressions, `\b` only knows ASCII letters: `\bécris` never matches. Leave out `\b` before or after an accented letter.
+- **Check the keys.** Each journal line has a `task` field. After a few delegations, read `.claude/agent-model-router/journal.jsonl` and check that each task got its own key.
 
 ## Tuning the table
 
