@@ -9,6 +9,18 @@ A Claude Code plugin that picks the model each subagent runs on, per project.
 
 The plugin never blocks an agent. With no config, or a broken one, agents run exactly as they would without it.
 
+## Who it is for
+
+The plugin acts only when Claude delegates work to a **subagent** (the Agent tool). It does nothing to the main conversation's model.
+
+It pays off in projects that define their own agents in `.claude/agents/` and delegate repeated tasks to them: a writer, a reviewer, a researcher. There the table, the retry escalation and the tuning have something to work on.
+
+| Your project | What the plugin does |
+|---|---|
+| Agents in `.claude/agents/`, delegated to often | Everything this README describes |
+| No agents of its own | Routes only the built-in agents Claude spawns by itself (`Explore` on `haiku` by default). Little to gain |
+| No delegation at all | Nothing. Its only cost is the `model-tuner` agent's description, about 80 tokens per session. Leave it uninstalled |
+
 ## Install
 
 In a Claude Code terminal session:
@@ -33,7 +45,7 @@ Requires Claude Code 2.1.293 or later (function hooks).
 This does two things, with nothing to edit by hand:
 
 1. **Writes `.claude/agent-model-router.json`** from your project: one entry per agent in `.claude/agents/`, on the model its frontmatter names, plus `Explore` on `haiku`. An agent whose model is not on the ladder (`fable`, `inherit`) keeps its own model: the table never moves it. Routing is on from here, with a working config.
-2. **Asks Claude to fit it to the project**, in a turn of its own right after the command. Claude reads your agents and `CLAUDE.md`, then sets `escalation.taskKey` to the way your tasks are named (in their language: `bloc 3`, `ticket 42`), adds rules only where the project marks a kind of task as harder, and points `context` at the files where outcomes are recorded. It then proposes one line for your `CLAUDE.md` so that each delegation names its task (see [How a retry is recognized](#how-a-retry-is-recognized)), and asks before writing it.
+2. **Asks Claude to fit it to the project**, in a turn of its own right after the command. Claude reads your agents and `CLAUDE.md`, then sets `escalation.taskKey` to the way your tasks are named (in their language: `bloc 3`, `ticket 42`), adds rules only where the project marks a kind of task as harder, and points `context` at the files where outcomes are recorded. It then proposes one line for your `CLAUDE.md` so that each delegation names its task (see [How a retry is recognized](#how-a-retry-is-recognized)), and asks before writing it. This step is skipped when the project has no agents of its own (see [Who it is for](#who-it-is-for)).
 
 Run the second step again at any time, for example after adding an agent:
 

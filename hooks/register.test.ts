@@ -251,10 +251,13 @@ describe('/model-router init', () => {
     expect(w.spawned).toEqual([undefined])
   })
 
-  test('without agents the config still works', async ($, on) => {
+  test('without agents the config still works, and says the plugin has little to do', async ($, on) => {
     const w = world(on)
-    await $.command.run({ command: 'model-router', args: 'init' })
+    const r = await $.command.run({ command: 'model-router', args: 'init' })
     expect(Object.keys(parseConfig(w.files.get(CONFIG) ?? '').agents)).toEqual(['Explore'])
+    expect(r.text).toContain('no agents in .claude/agents/')
+    await settle(w)
+    expect(w.prompts).toEqual([])
   })
 
   test('an existing config is never overwritten; adjust refits it', async ($, on) => {

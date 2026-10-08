@@ -222,6 +222,12 @@ export const register: Register = on => {
       if (!(await staysInside($, root, CONFIG_PATH))) return { text: `${loaded.path} resolves outside the project; not written.` }
       const agents = await projectAgents($, root)
       await $.fs.write(loaded.path, `${JSON.stringify(starterConfig(agents), null, 2)}\n`)
+      // Without agents of its own there is nothing to fit: only built-in agents are routed.
+      if (agents.length === 0) {
+        return {
+          text: `Created ${loaded.path}. This project has no agents in .claude/agents/, so only the built-in agents Claude spawns are routed (Explore on haiku). The plugin pays off once the project has agents of its own: add them, then run /${COMMAND} adjust.`,
+        }
+      }
       const names = ['Explore', ...agents.map(a => a.name)].join(', ')
       const adjusting = await adjust($)
       return {
