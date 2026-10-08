@@ -51,6 +51,22 @@ const regex = (pattern: string, where: string): RegExp => {
   }
 }
 
+export const JOURNAL_PATH = '.claude/agent-model-router/journal.jsonl'
+
+/**
+ * The config comes from the project, which may be an untrusted clone: the
+ * journal is held to a relative path under `.claude/`, with no `..`, so the
+ * plugin can never be pointed at a file outside the project.
+ */
+export const safeJournalPath = (value: unknown): string => {
+  const path = str(value, 'journal.path').replace(/\\/g, '/')
+  const parts = path.split('/')
+  const isSafe = !path.startsWith('/') && !/^[A-Za-z]:/.test(path) && parts[0] === '.claude' &&
+    parts.length >= 2 && parts.every(p => p !== '' && p !== '.' && p !== '..')
+  if (!isSafe) throw new Error(`journal.path must be a relative path under .claude/ with no "..": ${path}`)
+  return path
+}
+
 /** Parses the project config, filling defaults. Throws a readable error on a bad field. */
 export const parseConfig = (text: string): Config => {
   let raw: unknown
@@ -89,6 +105,7 @@ export const parseConfig = (text: string): Config => {
   const taskKey = esc.taskKey === undefined ? undefined : str(esc.taskKey, 'escalation.taskKey')
   if (taskKey) regex(taskKey, 'escalation.taskKey')
   const jr = isRecord(raw.journal) ? raw.journal : {}
+  const journalPath = jr.path === undefined ? JOURNAL_PATH : safeJournalPath(jr.path)
   const maxModel = raw.maxModel === undefined ? undefined : str(raw.maxModel, 'maxModel')
 
   return {
@@ -104,7 +121,7 @@ export const parseConfig = (text: string): Config => {
     },
     journal: {
       enabled: jr.enabled !== false,
-      path: typeof jr.path === 'string' && jr.path.trim() !== '' ? jr.path.trim() : '.claude/agent-model-router/journal.jsonl',
+      path: journalPath,
       maxEntries: typeof jr.maxEntries === 'number' && jr.maxEntries > 0 ? Math.floor(jr.maxEntries) : 5000,
     },
     notify: raw.notify !== false,

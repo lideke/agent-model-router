@@ -33,16 +33,44 @@ const loadConfig = async ($: EngineInterface): Promise<Loaded> => {
   }
 }
 
+const isUnder = (path: string, root: string): boolean =>
+  path === root || path.startsWith(`${root}/`) || path.startsWith(`${root}\\`)
+
+/**
+ * A cloned project can hold a symbolic link where the journal goes: every
+ * step of `rel` that exists must resolve inside the project root, and a
+ * step that exists without resolving (a dangling link) is refused.
+ */
+const staysInside = async ($: EngineInterface, root: string, rel: string): Promise<boolean> => {
+  const realRoot = (await $.fs.stat(root, { resolve: true })).realPath
+  if (realRoot === undefined) return false
+  let at = root.replace(/[\\/]$/, '')
+  for (const part of rel.split('/')) {
+    const parent = at
+    at = `${at}/${part}`
+    const stat = await $.fs.stat(at, { resolve: true }).catch(() => undefined)
+    if (stat === undefined) {
+      const entries = await $.fs.list(parent).catch(() => [])
+      return !entries.some(entry => entry.name === part)
+    }
+    if (stat.realPath === undefined || !isUnder(stat.realPath, realRoot)) return false
+  }
+  return true
+}
+
 // One journal write at a time: parallel spawns would otherwise overwrite each other.
 let journalQueue: Promise<void> = Promise.resolve()
 
 const appendJournal = ($: EngineInterface, cfg: Config, root: string, entry: object): Promise<void> => {
   const path = join(root, cfg.journal.path)
   const run = journalQueue.then(async () => {
-    const dir = dirOf(path)
-    const ignore = `${dir}/.gitignore`
+    const relDir = dirOf(cfg.journal.path)
+    if (!(await staysInside($, root, cfg.journal.path)) || !(await staysInside($, root, `${relDir}/.gitignore`))) {
+      throw new Error(`${cfg.journal.path} resolves outside the project`)
+    }
+    const ignore = join(root, `${relDir}/.gitignore`)
     // The journal holds task descriptions: keep its folder out of git by default.
-    if (dir && !(await $.fs.exists(ignore))) await $.fs.write(ignore, '*\n')
+    if (!(await $.fs.exists(ignore))) await $.fs.write(ignore, '*\n')
     const old = (await $.fs.exists(path)) ? (await $.fs.read(path)).split('\n').filter(l => l.trim() !== '') : []
     old.push(JSON.stringify(entry))
     await $.fs.write(path, `${old.slice(-cfg.journal.maxEntries).join('\n')}\n`)
@@ -119,6 +147,7 @@ export const register: Register = on => {
 
     if (e.args.trim() === 'init') {
       if (loaded.config || loaded.error) return { text: `${loaded.path} already exists; edit it there.` }
+      if (!(await staysInside($, await $.session.root(), CONFIG_PATH))) return { text: `${loaded.path} resolves outside the project; not written.` }
       await $.fs.write(loaded.path, await $.fs.read(`${$.plugin.root}/examples/agent-model-router.json`))
       return { text: `Created ${loaded.path}. Edit the agent names and models to match your .claude/agents/.` }
     }
@@ -139,8 +168,9 @@ export const register: Register = on => {
       const attempts = prune(await $.store.get(ATTEMPTS), now, cfg.escalation.windowMinutes)
       lines.push(`Tasks tracked for retry: ${Object.keys(attempts).length}`)
 
-      const journal = join(await $.session.root(), cfg.journal.path)
-      if (cfg.journal.enabled && (await $.fs.exists(journal))) {
+      const root = await $.session.root()
+      const journal = join(root, cfg.journal.path)
+      if (cfg.journal.enabled && (await $.fs.exists(journal)) && (await staysInside($, root, cfg.journal.path))) {
         const last = (await $.fs.read(journal)).split('\n').filter(l => l.trim() !== '').slice(-10)
         lines.push('Last decisions:')
         for (const l of last) {

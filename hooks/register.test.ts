@@ -19,6 +19,18 @@ const BASE = {
 // store, a clock, and an Agent tool that resolves aliases the way the engine does.
 const world = (on: On, config?: object | string) => {
   const files = new Map<string, string>()
+  // Symbolic links by path, to where they lead; a dangling one leads nowhere.
+  const links = new Map<string, string>()
+  const dangling = new Set<string>()
+  const real = (path: string): string => {
+    for (const [link, target] of links) {
+      if (path === link || path.startsWith(`${link}/`)) return target + path.slice(link.length)
+    }
+    return path
+  }
+  const names = (): string[] => [ROOT, ...files.keys(), ...links.keys(), ...dangling]
+  const isThere = (path: string): boolean =>
+    links.has(path) || names().some(n => n === path || n.startsWith(`${path}/`))
   if (config !== undefined) files.set(CONFIG, typeof config === 'string' ? config : JSON.stringify(config))
   const toasts: string[] = []
   const spawned: (string | undefined)[] = []
@@ -33,6 +45,15 @@ const world = (on: On, config?: object | string) => {
     files.set(e.path, e.text)
     return { value: undefined }
   })
+  on('fs.stat', ($, e) => {
+    if (dangling.has(e.path) || !isThere(e.path)) throw new Error(`ENOENT ${e.path}`)
+    const kind = files.has(e.path) ? 'file' as const : 'dir' as const
+    return { value: { kind, size: 0, mtimeMs: 0, isLink: links.has(e.path), realPath: real(e.path) } }
+  })
+  on('fs.list', ($, e) => {
+    const children = new Set(names().filter(n => n.startsWith(`${e.path}/`)).map(n => n.slice(e.path.length + 1).split('/')[0] ?? ''))
+    return { value: [...children].map(name => ({ name, kind: 'other' as const, size: 0, mtimeMs: 0, isLink: false })) }
+  })
   on('ui.toast', ($, e) => {
     toasts.push(e.text)
     return { value: undefined }
@@ -45,7 +66,7 @@ const world = (on: On, config?: object | string) => {
   })
   mock.store(on)
   mock.clock(on, { now: Date.UTC(2026, 9, 9) })
-  return { files, toasts, spawned }
+  return { files, links, dangling, toasts, spawned }
 }
 
 // What the Agent tool fills in before `agent.spawn` is raised.
@@ -127,6 +148,37 @@ describe('routing', () => {
     expect(entry.resolved).toBe('claude-sonnet-5-5')
     expect(entry.prompt).toBeUndefined()
     expect(w.files.get(`${ROOT}/.claude/agent-model-router/.gitignore`)).toBe('*\n')
+  })
+})
+
+describe('the journal stays inside the project', () => {
+  test('a config cannot point the journal outside .claude/', () => {
+    for (const path of ['/etc/passwd', '../outside.jsonl', '.claude/../x.jsonl', 'logs/j.jsonl', 'C:/x.jsonl', '.claude']) {
+      expect(() => parseConfig(JSON.stringify({ journal: { path } }))).toThrow('journal.path')
+    }
+    expect(parseConfig(JSON.stringify({ journal: { path: '.claude/logs/j.jsonl' } })).journal.path).toBe('.claude/logs/j.jsonl')
+  })
+
+  test('an unsafe journal path turns routing off', async ($, on) => {
+    const w = world(on, { ...BASE, journal: { path: '../../home/me/.bashrc' } })
+    await $.agent.spawn(call({ subagentType: 'writer', prompt: 'Write block 8', description: 'b' }))
+    expect(w.spawned).toEqual([undefined])
+    expect(w.toasts[0]).toContain('journal.path')
+  })
+
+  test('a symlinked journal folder is not written through', async ($, on) => {
+    const w = world(on, BASE)
+    w.links.set(`${ROOT}/.claude/agent-model-router`, '/home/me')
+    await $.agent.spawn(call({ subagentType: 'writer', prompt: 'Write block 9', description: 'b' }))
+    expect(w.spawned).toEqual(['sonnet'])
+    expect([...w.files.keys()].filter(k => k !== CONFIG)).toEqual([])
+  })
+
+  test('a dangling link where the journal goes is refused', async ($, on) => {
+    const w = world(on, BASE)
+    w.dangling.add(JOURNAL)
+    await $.agent.spawn(call({ subagentType: 'writer', prompt: 'Write block 10', description: 'b' }))
+    expect(w.files.has(JOURNAL)).toBe(false)
   })
 })
 

@@ -67,7 +67,7 @@ This creates `.claude/agent-model-router.json` from the example. Edit the agent 
 | `agents["*"]` | Entry for agents not listed | none |
 | `escalation.taskKey` | Regular expression that identifies "the same task" in the description or prompt. Without it, the task description is the key | none |
 | `escalation.windowMinutes` | How long a task is remembered for retry detection | `240` |
-| `journal.path` | Where decisions are logged, relative to the project root | `.claude/agent-model-router/journal.jsonl` |
+| `journal.path` | Where decisions are logged: a relative path under `.claude/`, no `..`. Any other value turns routing off, and the plugin never writes through a symbolic link that leads outside the project | `.claude/agent-model-router/journal.jsonl` |
 | `tags` | Honour `[model: <name>]` written in a delegation prompt | `true` |
 | `notify` | Show a toast when the plugin changes a model | `true` |
 | `context` | Files or globs the `model-tuner` agent reads to learn which tasks passed or failed | `[]` |
