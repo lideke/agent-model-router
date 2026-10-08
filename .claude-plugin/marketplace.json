@@ -1,0 +1,14 @@
+{
+  "name": "agent-model-router",
+  "description": "Per-project model routing for Claude Code subagents.",
+  "owner": {
+    "name": "Deke"
+  },
+  "plugins": [
+    {
+      "name": "agent-model-router",
+      "source": "./",
+      "description": "Per-project model routing for Claude Code subagents, with retry escalation and a tuning agent."
+    }
+  ]
+}

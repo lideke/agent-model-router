@@ -1,0 +1,8 @@
+{
+  "name": "agent-model-router",
+  "version": "0.1.0",
+  "description": "Picks the model each subagent runs on from a per-project table, steps up a model when a task is retried, and logs every choice so an agent can tune the table.",
+  "author": { "name": "Deke" },
+  "license": "MIT",
+  "keywords": ["agents", "subagents", "model", "routing", "cost"]
+}

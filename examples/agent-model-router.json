@@ -1,0 +1,33 @@
+{
+  "enabled": true,
+  "ladder": ["haiku", "sonnet", "opus"],
+  "maxModel": "opus",
+  "agents": {
+    "Explore": { "model": "haiku" },
+    "code-reviewer": {
+      "model": "sonnet",
+      "rules": [
+        { "match": "security|auth|migration|concurren", "model": "opus" }
+      ]
+    },
+    "writer": {
+      "model": "sonnet",
+      "rules": [
+        { "match": "\\b(intro|hook|opening)\\b", "model": "opus" }
+      ]
+    }
+  },
+  "tags": true,
+  "escalation": {
+    "enabled": true,
+    "taskKey": "(?:task|step|block)\\s*#?\\d+",
+    "windowMinutes": 240
+  },
+  "journal": {
+    "enabled": true,
+    "path": ".claude/agent-model-router/journal.jsonl",
+    "maxEntries": 5000
+  },
+  "notify": true,
+  "context": []
+}
