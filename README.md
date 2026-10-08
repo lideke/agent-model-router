@@ -14,10 +14,13 @@ The plugin never blocks an agent. With no config, or a broken one, agents run ex
 In a Claude Code terminal session:
 
 ```
-/plugin install agent-model-router --marketplace <owner>/agent-model-router
+/plugin marketplace add lideke/agent-model-router
+/plugin install agent-model-router@agent-model-router
 ```
 
-Answer `y` to add the marketplace, then pick a scope. The plugin is active right away.
+Pick a scope when asked. The plugin is active right away.
+
+From a shell, the same steps are `claude plugin marketplace add lideke/agent-model-router` and `claude plugin install agent-model-router@agent-model-router`.
 
 Requires Claude Code 2.1.293 or later (function hooks).
 
