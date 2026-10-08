@@ -61,7 +61,7 @@ This creates `.claude/agent-model-router.json` from the example. Edit the agent 
 |---|---|---|
 | `enabled` | Turns routing off without removing the file | `true` |
 | `ladder` | Models from cheapest to most capable. Aliases or full ids; a full id matches the alias it contains | `["haiku", "sonnet", "opus"]` |
-| `maxModel` | Highest model the plugin may choose | none |
+| `maxModel` | Highest model the plugin may choose. Must be on `ladder`. A model off the ladder (a tag such as `[model: fable]` under the default ladder) is capped too | none |
 | `agents.<name>.model` | Model for that agent. Omit it to keep the agent's own frontmatter model | agent default |
 | `agents.<name>.rules` | `{ match, model }` list. `match` is a case-insensitive regular expression tested on the task description and prompt; the first match wins | `[]` |
 | `agents["*"]` | Entry for agents not listed | none |
@@ -83,6 +83,8 @@ Agent names match the spawned type exactly (`agent-model-router:model-tuner`) or
 5. Retry: if the same task was spawned before, one rung above the model the previous attempt ran on, when that is higher.
 6. `maxModel` caps the result.
 
+If the spawn is refused on the chosen model (for example a model your account does not have), the agent runs on the model it would have used without the plugin, and a toast says so. The default ladder stops at `opus`, so escalation never picks a model you did not list.
+
 Forks always inherit their parent's model, and workflow agents cannot be rewritten: the plugin leaves both alone.
 
 ## Tuning the table
@@ -101,7 +103,7 @@ The journal stores task descriptions, agent names and models, never prompts. Its
 
 - Retry detection is a proxy for failure. A task re-sent for another reason (new scope) also escalates. Set `taskKey` so distinct tasks get distinct keys.
 - Rules match the prompt as Claude Code passes it to the subagent, which can include text added by the engine. Keep patterns specific.
-- Retry history lives in the plugin's store across sessions, pruned after `windowMinutes`.
+- Retry history lives in the plugin's store across sessions, keyed by project root and pruned after `windowMinutes`.
 
 ## Development
 

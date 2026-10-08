@@ -17,7 +17,9 @@ const BASE = {
 
 // The world beneath the plugin: a file system in memory, a project root, a
 // store, a clock, and an Agent tool that resolves aliases the way the engine does.
-const world = (on: On, config?: object | string) => {
+type Options = { unavailable?: string; store?: Record<string, unknown> }
+
+const world = (on: On, config?: object | string, options: Options = {}) => {
   const files = new Map<string, string>()
   // Symbolic links by path, to where they lead; a dangling one leads nowhere.
   const links = new Map<string, string>()
@@ -60,11 +62,13 @@ const world = (on: On, config?: object | string) => {
   })
   on('ui.log', () => ({ value: undefined }))
   on('agent.spawn', ($, e) => {
+    // A model the account cannot use: the spawn is refused.
+    if (options.unavailable && e.model?.includes(options.unavailable)) return { deny: `model ${e.model} is not available` }
     spawned.push(e.model)
     const model = e.model === undefined ? 'claude-sonnet-5-5' : /^[a-z]+$/.test(e.model) ? `claude-${e.model}-5-5` : e.model
     return { model, agentId: `agent-${spawned.length}` }
   })
-  mock.store(on)
+  mock.store(on, options.store)
   mock.clock(on, { now: Date.UTC(2026, 9, 9) })
   return { files, links, dangling, toasts, spawned }
 }
@@ -148,6 +152,54 @@ describe('routing', () => {
     expect(entry.resolved).toBe('claude-sonnet-5-5')
     expect(entry.prompt).toBeUndefined()
     expect(w.files.get(`${ROOT}/.claude/agent-model-router/.gitignore`)).toBe('*\n')
+  })
+})
+
+describe('models the user may not have', () => {
+  test('escalation stops at the top of the ladder, never past it', async ($, on) => {
+    const w = world(on, BASE)
+    for (const n of [1, 2, 3]) await $.agent.spawn(call({ subagentType: 'writer', prompt: `Write block 11, try ${n}`, description: 'b' }))
+    expect(w.spawned).toEqual(['sonnet', 'opus', 'opus'])
+  })
+
+  test('maxModel also caps a model that is not on the ladder', async ($, on) => {
+    const w = world(on, { ...BASE, maxModel: 'opus', agents: { writer: { model: 'claude-fable-5-1' } } })
+    await $.agent.spawn(call({ subagentType: 'writer', prompt: 'Write block 12 [model: fable]', description: 'a' }))
+    await $.agent.spawn(call({ subagentType: 'writer', prompt: 'Write block 13', description: 'b' }))
+    expect(w.spawned).toEqual(['opus', 'opus'])
+  })
+
+  test('without maxModel an explicit model off the ladder is kept', () => {
+    const cfg = parseConfig(JSON.stringify(BASE))
+    expect(decide({ agent: 'writer', prompt: '[model: fable]', description: 'd' }, cfg).model).toBe('fable')
+  })
+
+  test('a maxModel that is not on the ladder is a config error', () => {
+    expect(() => parseConfig(JSON.stringify({ ...BASE, maxModel: 'fable' }))).toThrow('maxModel')
+    expect(parseConfig(JSON.stringify({ ...BASE, maxModel: 'claude-opus-5-5' })).maxModel).toBe('claude-opus-5-5')
+  })
+
+  test('a model the account cannot use falls back to the agent own model', async ($, on) => {
+    const w = world(on, { ...BASE, ladder: ['haiku', 'sonnet', 'opus', 'fable'], agents: { writer: { model: 'fable' } } }, { unavailable: 'fable' })
+    const r = await $.agent.spawn(call({ subagentType: 'writer', prompt: 'Write block 14', description: 'b' }))
+    expect(w.spawned).toEqual([undefined])
+    expect(r.model).toBe('claude-sonnet-5-5')
+  })
+})
+
+describe('retry history', () => {
+  test('a task from another project is not a retry', async ($, on) => {
+    const attempts = { 'writer|block 15': { model: 'claude-sonnet-5-5', count: 1, at: Date.UTC(2026, 9, 9) } }
+    const w = world(on, BASE, { store: { attempts } })
+    await $.agent.spawn(call({ subagentType: 'writer', prompt: 'Write block 15', description: 'b' }))
+    expect(w.spawned).toEqual(['sonnet'])
+  })
+
+  test('parallel spawns of different tasks are all remembered', async ($, on) => {
+    const w = world(on, BASE)
+    await Promise.all([16, 17, 18].map(n => $.agent.spawn(call({ subagentType: 'writer', prompt: `Write block ${n}`, description: 'b' }))))
+    for (const n of [16, 17, 18]) await $.agent.spawn(call({ subagentType: 'writer', prompt: `Redo block ${n}`, description: 'b' }))
+    expect(w.spawned).toEqual(['sonnet', 'sonnet', 'sonnet', 'opus', 'opus', 'opus'])
   })
 })
 

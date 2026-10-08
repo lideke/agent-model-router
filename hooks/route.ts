@@ -107,6 +107,7 @@ export const parseConfig = (text: string): Config => {
   const jr = isRecord(raw.journal) ? raw.journal : {}
   const journalPath = jr.path === undefined ? JOURNAL_PATH : safeJournalPath(jr.path)
   const maxModel = raw.maxModel === undefined ? undefined : str(raw.maxModel, 'maxModel')
+  if (maxModel && rankOf(maxModel, ladder) < 0) throw new Error(`maxModel must be on the ladder (${ladder.join(', ')}): ${maxModel}`)
 
   return {
     enabled: raw.enabled !== false,
@@ -205,10 +206,13 @@ export const decide = (facts: SpawnFacts, cfg: Config, previous?: Attempt): Choi
     }
   }
 
+  // A model off the ladder (one the table does not know, such as `fable`
+  // under the default ladder) cannot be ranked, so the cap replaces it too.
   if (choice.model && cfg.maxModel) {
-    const max = rankOf(cfg.maxModel, cfg.ladder)
-    if (max >= 0 && rankOf(choice.model, cfg.ladder) > max) {
-      choice = { ...choice, model: cfg.maxModel, detail: [choice.detail, `capped at ${cfg.maxModel}`].filter(Boolean).join(', ') }
+    const rank = rankOf(choice.model, cfg.ladder)
+    if (rank < 0 || rank > rankOf(cfg.maxModel, cfg.ladder)) {
+      const why = rank < 0 ? `${choice.model} is not on the ladder, capped at ${cfg.maxModel}` : `capped at ${cfg.maxModel}`
+      choice = { ...choice, model: cfg.maxModel, detail: [choice.detail, why].filter(Boolean).join(', ') }
     }
   }
 

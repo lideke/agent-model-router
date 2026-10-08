@@ -1,5 +1,6 @@
 import type { EngineInterface, Register } from 'claude-code'
 import {
+  type Attempt,
   CONFIG_PATH,
   type Choice,
   type Config,
@@ -79,6 +80,26 @@ const appendJournal = ($: EngineInterface, cfg: Config, root: string, entry: obj
   return run
 }
 
+// The store is the user's, shared by every project: retry history is keyed by
+// project root, so one task name in two projects never counts as a retry.
+const scoped = (root: string, task: string): string => `${root}|${task}`
+
+// One read-modify-write of the attempts at a time: parallel spawns would
+// otherwise each write back their own copy and drop the others' tasks.
+let attemptsQueue: Promise<unknown> = Promise.resolve()
+
+const recordAttempt = ($: EngineInterface, cfg: Config, key: string, model: string, now: number): Promise<Attempt> => {
+  const run = attemptsQueue.then(async () => {
+    const attempts = prune(await $.store.get(ATTEMPTS), now, cfg.escalation.windowMinutes)
+    const attempt = { model, count: (attempts[key]?.count ?? 0) + 1, at: now }
+    attempts[key] = attempt
+    await $.store.set(ATTEMPTS, attempts)
+    return attempt
+  })
+  attemptsQueue = run.catch(() => {})
+  return run
+}
+
 const label = (choice: Choice): string =>
   choice.source === 'rule' ? `rule /${choice.detail}/` : choice.detail ? `${choice.source}, ${choice.detail}` : choice.source
 
@@ -109,34 +130,49 @@ export const register: Register = on => {
 
     const facts = { agent: e.subagentType, prompt: e.prompt, description: e.description, given: e.model }
     const now = await $.clock.now()
+    const root = await $.session.root()
     const task = taskKeyOf(facts, cfg)
-    const attempts = prune(await $.store.get(ATTEMPTS), now, cfg.escalation.windowMinutes)
-    const previous = attempts[task]
-    const choice = decide(facts, cfg, previous)
+    const key = scoped(root, task)
+    const previous = prune(await $.store.get(ATTEMPTS), now, cfg.escalation.windowMinutes)[key]
+    let choice = decide(facts, cfg, previous)
 
-    const result = await next(choice.model && choice.model !== e.model ? { ...e, model: choice.model } : e)
+    const routed = choice.model !== undefined && choice.model !== e.model
+    let result = await next(routed ? { ...e, model: choice.model } : e)
+    // Refused on the model the table chose (one the account may not have, such
+    // as `fable`): run the agent as it would have run without the plugin.
+    if (routed && 'deny' in result && result.deny !== undefined) {
+      const refused = `${choice.model} refused (${result.deny})`
+      $.ui.toast(`agent-model-router: ${refused}, ${short(e.subagentType)} runs on its own model`)
+      choice = { model: e.model, source: 'default', detail: refused }
+      result = await next(e)
+    }
     if ('deny' in result && result.deny !== undefined) return result
 
-    attempts[task] = { model: result.model, count: (previous?.count ?? 0) + 1, at: now }
-    await $.store.set(ATTEMPTS, attempts)
+    // The agent is running: nothing below may throw, or the fail-open catch
+    // would spawn it a second time.
+    try {
+      const attempt = await recordAttempt($, cfg, key, result.model, now)
 
-    if (cfg.notify && choice.source !== 'default' && choice.source !== 'caller') {
-      $.ui.toast(`${short(e.subagentType)} → ${choice.model} (${label(choice)})`)
-    }
+      if (cfg.notify && choice.source !== 'default' && choice.source !== 'caller') {
+        $.ui.toast(`${short(e.subagentType)} → ${choice.model} (${label(choice)})`)
+      }
 
-    if (cfg.journal.enabled) {
-      await appendJournal($, cfg, await $.session.root(), {
-        ts: new Date(now).toISOString(),
-        agent: e.subagentType,
-        task,
-        attempt: attempts[task].count,
-        source: choice.source,
-        detail: choice.detail,
-        requested: choice.model ?? null,
-        resolved: result.model,
-        description: e.description,
-        promptChars: e.prompt.length,
-      }).catch(err => $.ui.log(`agent-model-router: journal not written: ${(err as Error).message}`))
+      if (cfg.journal.enabled) {
+        await appendJournal($, cfg, root, {
+          ts: new Date(now).toISOString(),
+          agent: e.subagentType,
+          task,
+          attempt: attempt.count,
+          source: choice.source,
+          detail: choice.detail,
+          requested: choice.model ?? null,
+          resolved: result.model,
+          description: e.description,
+          promptChars: e.prompt.length,
+        }).catch(err => $.ui.log(`agent-model-router: journal not written: ${(err as Error).message}`))
+      }
+    } catch (err) {
+      $.ui.log(`agent-model-router: decision not recorded: ${(err as Error).message}`)
     }
 
     return result
@@ -165,10 +201,11 @@ export const register: Register = on => {
         lines.push(`  ${name}: ${entry.model ?? 'agent default'}${rules}`)
       }
       const now = await $.clock.now()
-      const attempts = prune(await $.store.get(ATTEMPTS), now, cfg.escalation.windowMinutes)
-      lines.push(`Tasks tracked for retry: ${Object.keys(attempts).length}`)
-
       const root = await $.session.root()
+      const attempts = prune(await $.store.get(ATTEMPTS), now, cfg.escalation.windowMinutes)
+      const tracked = Object.keys(attempts).filter(k => k.startsWith(scoped(root, ''))).length
+      lines.push(`Tasks tracked for retry: ${tracked}`)
+
       const journal = join(root, cfg.journal.path)
       if (cfg.journal.enabled && (await $.fs.exists(journal)) && (await staysInside($, root, cfg.journal.path))) {
         const last = (await $.fs.read(journal)).split('\n').filter(l => l.trim() !== '').slice(-10)
