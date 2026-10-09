@@ -348,6 +348,16 @@ describe('/model-router fable', () => {
     expect(cfg.maxModel).toBe('opus')
   })
 
+  test('a config linked to a file outside the project is not written', async ($, on) => {
+    const w = world(on, BASE)
+    reachable(on, true)
+    w.links.set(CONFIG, '/home/me/.claude/settings.json')
+    const before = w.files.get(CONFIG)
+    const r = await $.command.run({ command: 'model-router', args: 'fable on' })
+    expect(r.text).toContain('resolves outside the project')
+    expect(w.files.get(CONFIG)).toBe(before)
+  })
+
   test('with fable on, a retry of an opus task runs on fable', () => {
     const cfg = parseConfig(withTopModel(JSON.stringify(BASE), 'fable', true))
     expect(decide({ agent: 'writer', prompt: 'p', description: 'd' }, cfg, { model: 'claude-opus-5-5', count: 1, at: 0 }).model).toBe('fable')

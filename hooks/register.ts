@@ -249,6 +249,8 @@ export const register: Register = on => {
 const setFable = async ($: EngineInterface, loaded: Loaded, on: boolean): Promise<string> => {
   if (loaded.error) return `Fix the config first: ${loaded.error}`
   if (!loaded.config) return `No config yet. Run /${COMMAND} first.`
+  // A cloned project can make the config a link to a JSON file elsewhere: never write through it.
+  if (!(await staysInside($, await $.session.root(), CONFIG_PATH))) return `${loaded.path} resolves outside the project; not written.`
   if (on) {
     const probe = await $.model.complete({ model: FABLE, prompt: 'Reply with OK.', maxTokens: 5, timeoutMs: 30_000 }).catch(() => undefined)
     if (!probe || (!probe.isAnswered && probe.reason !== 'empty-reply')) {
