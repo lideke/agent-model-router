@@ -1,6 +1,6 @@
 import type { AgentSpawnInput, On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
-import { decide, parseConfig, rankOf, readAgentFile, taskKeyOf } from './route.ts'
+import { decide, parseConfig, rankOf, readAgentFile, taskKeyOf, withTopModel } from './route.ts'
 
 const ROOT = '/proj'
 const CONFIG = `${ROOT}/.claude/agent-model-router.json`
@@ -306,6 +306,51 @@ describe('/model-router init', () => {
   test('frontmatter is read, quotes and all, with the file name as fallback', () => {
     expect(readAgentFile('---\nname: "writer"\nmodel: \'opus\'\n---\nx', 'w.md')).toEqual({ name: 'writer', model: 'opus' })
     expect(readAgentFile('no frontmatter', 'editor.md')).toEqual({ name: 'editor', model: undefined })
+  })
+})
+
+describe('/model-router fable', () => {
+  const usage = { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 }
+  const reachable = (on: On, has: boolean) =>
+    on('model.complete', () => ({
+      value: has
+        ? { isAnswered: true as const, text: 'OK', usage }
+        : { isAnswered: false as const, reason: 'api-error' as const, status: 404, error: 'not_found_error', usage },
+    }))
+
+  test('turns fable on when the account has it, keeping every other field', async ($, on) => {
+    const w = world(on, { ...BASE, maxModel: 'opus' })
+    reachable(on, true)
+    const r = await $.command.run({ command: 'model-router', args: 'fable on' })
+    expect(r.text).toContain('fable is on top')
+    const cfg = parseConfig(w.files.get(CONFIG) ?? '')
+    expect(cfg.ladder).toEqual(['haiku', 'sonnet', 'opus', 'fable'])
+    expect(cfg.maxModel).toBe('fable')
+    expect(cfg.escalation.taskKey).toBe('block\\s*\\d+')
+    expect(cfg.agents.writer?.rules.length).toBe(1)
+  })
+
+  test('leaves the config alone when the account does not have fable', async ($, on) => {
+    const w = world(on, { ...BASE, maxModel: 'opus' })
+    reachable(on, false)
+    const before = w.files.get(CONFIG)
+    const r = await $.command.run({ command: 'model-router', args: 'fable' })
+    expect(r.text).toContain('may not have it')
+    expect(r.text).toContain('404')
+    expect(w.files.get(CONFIG)).toBe(before)
+  })
+
+  test('fable off takes it off the ladder and the cap', async ($, on) => {
+    const w = world(on, { ...BASE, ladder: ['haiku', 'sonnet', 'opus', 'fable'], maxModel: 'fable' })
+    await $.command.run({ command: 'model-router', args: 'fable off' })
+    const cfg = parseConfig(w.files.get(CONFIG) ?? '')
+    expect(cfg.ladder).toEqual(['haiku', 'sonnet', 'opus'])
+    expect(cfg.maxModel).toBe('opus')
+  })
+
+  test('with fable on, a retry of an opus task runs on fable', () => {
+    const cfg = parseConfig(withTopModel(JSON.stringify(BASE), 'fable', true))
+    expect(decide({ agent: 'writer', prompt: 'p', description: 'd' }, cfg, { model: 'claude-opus-5-5', count: 1, at: 0 }).model).toBe('fable')
   })
 })
 

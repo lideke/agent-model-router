@@ -147,6 +147,24 @@ export const stepUp = (model: string, ladder: readonly string[]): string | undef
   return ladder[Math.min(r + 1, ladder.length - 1)]
 }
 
+/**
+ * The config text with `model` added at the top of the ladder and made the
+ * cap (`on`), or taken off both (`off`, the cap falling to the new top rung).
+ * Every other field is kept as written. Throws when the result is not a valid config.
+ */
+export const withTopModel = (text: string, model: string, on: boolean): string => {
+  parseConfig(text)
+  const raw = JSON.parse(text) as Record<string, unknown>
+  const ladder = Array.isArray(raw.ladder) ? raw.ladder.map(String) : ['haiku', 'sonnet', 'opus']
+  const rest = ladder.filter(m => m.toLowerCase() !== model)
+  raw.ladder = on ? [...rest, model] : rest
+  if (on) raw.maxModel = model
+  else if (typeof raw.maxModel === 'string' && raw.maxModel.toLowerCase() === model) raw.maxModel = rest[rest.length - 1]
+  const out = `${JSON.stringify(raw, null, 2)}\n`
+  parseConfig(out)
+  return out
+}
+
 export type AgentFile = { name: string; model?: string }
 
 /** Name and model from an agent file's frontmatter; the file name when it has no `name`. */

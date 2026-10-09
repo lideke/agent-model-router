@@ -53,6 +53,8 @@ Each later run shows the active config, then fits it again to the project as it 
 |---|---|
 | `/model-router` | Creates the config if there is none, shows it, then has Claude fit it to the project |
 | `/model-router status` | Only shows the config, the retry history and the last decisions. No model turn |
+| `/model-router fable on` | Puts `fable` on top of the ladder and makes it the cap, after checking your account can use it. See [Using fable](#using-fable) |
+| `/model-router fable off` | Takes `fable` off the ladder and the cap |
 
 Claude Code asks your permission before Claude edits a file under `.claude/`; accept it to let the fitting apply. In a headless `claude -p` run nobody can accept, so Claude only reports the changes it proposes: run `/model-router` later in an interactive session.
 
@@ -109,6 +111,32 @@ Agent names match the spawned type exactly (`agent-model-router:model-tuner`) or
 If the spawn is refused on the chosen model (for example a model your account does not have), the agent runs on the model it would have used without the plugin, and a toast says so. The default ladder stops at `opus`, so escalation never picks a model you did not list.
 
 Forks always inherit their parent's model, and workflow agents cannot be rewritten: the plugin leaves both alone.
+
+## Using fable
+
+`fable` is the most capable model, and the most expensive. It is **off by default**: the default ladder stops at `opus`, so the plugin never picks a model your account may not have.
+
+Turn it on per project:
+
+```
+/model-router fable on
+```
+
+The command first sends `fable` a one-line question. If your account cannot use it, the command says so and leaves the config unchanged. Otherwise it edits two fields and keeps the rest as written:
+
+```json
+"ladder": ["haiku", "sonnet", "opus", "fable"],
+"maxModel": "fable"
+```
+
+What changes:
+
+- A retry of a task that ran on `opus` now runs on `fable`.
+- A table model, rule or `[model: fable]` tag can now pick `fable`. Before, `maxModel: "opus"` capped them to `opus`.
+
+To use `fable` only where you ask for it, never through retries, keep it on and turn retries off (`"escalation": { "enabled": false }`), or give the agents that need it a rule or a table model of `fable`.
+
+Turn it off with `/model-router fable off`: `fable` leaves the ladder and the cap falls back to `opus`. The fitting that `/model-router` runs never touches `ladder` or `maxModel`, so your choice stays.
 
 ## How a retry is recognized
 

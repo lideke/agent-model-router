@@ -12,9 +12,11 @@ import {
   readAgentFile,
   starterConfig,
   taskKeyOf,
+  withTopModel,
 } from './route.ts'
 
 const COMMAND = 'model-router'
+const FABLE = 'fable'
 const ATTEMPTS = 'attempts'
 
 type Loaded = { path: string; config?: Config; error?: string }
@@ -143,8 +145,8 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'model-router',
-      description: 'Create or fit the agent-model-router config to this project; "status" only shows it',
-      argumentHint: '[status]',
+      description: 'Create or fit the agent-model-router config to this project; "status" only shows it; "fable on|off" puts fable on the ladder',
+      argumentHint: '[status | fable on | fable off]',
     })
     return next(e)
   })
@@ -218,6 +220,9 @@ export const register: Register = on => {
 
     if (arg === 'status') return { text: (await status($, loaded)).join('\n') }
 
+    const top = /^fable(?:\s+(on|off))?$/i.exec(arg)
+    if (top) return { text: await setFable($, loaded, top[1]?.toLowerCase() !== 'off') }
+
     // No config yet: create it from the project's agents, then fit it.
     if (!loaded.config && !loaded.error) return { text: await create($, loaded.path) }
     if (arg === 'init') return { text: `${loaded.path} already exists. Run /${COMMAND} to fit it to this project.` }
@@ -234,6 +239,31 @@ export const register: Register = on => {
     }
     return { text: lines.join('\n') }
   })
+}
+
+/**
+ * Puts `fable` on top of the ladder and makes it the cap, or takes it off.
+ * Turning it on first asks the model one tiny question, so an account
+ * without `fable` gets a clear answer and an unchanged config.
+ */
+const setFable = async ($: EngineInterface, loaded: Loaded, on: boolean): Promise<string> => {
+  if (loaded.error) return `Fix the config first: ${loaded.error}`
+  if (!loaded.config) return `No config yet. Run /${COMMAND} first.`
+  if (on) {
+    const probe = await $.model.complete({ model: FABLE, prompt: 'Reply with OK.', maxTokens: 5, timeoutMs: 30_000 }).catch(() => undefined)
+    if (!probe || (!probe.isAnswered && probe.reason !== 'empty-reply')) {
+      const why = probe && !probe.isAnswered && probe.reason === 'api-error' ? ` (API status ${probe.status})` : ''
+      return `${FABLE} did not answer${why}: this account may not have it. Config unchanged.`
+    }
+  }
+  try {
+    await $.fs.write(loaded.path, withTopModel(await $.fs.read(loaded.path), FABLE, on))
+  } catch (err) {
+    return `Config unchanged: ${(err as Error).message}`
+  }
+  return on
+    ? `${FABLE} is on top of the ladder and is the cap. A retry of a task that ran on opus now runs on ${FABLE}, the most expensive model. Run /${COMMAND} ${FABLE} off to undo.`
+    : `${FABLE} is off the ladder. Escalation stops at the rung below it.`
 }
 
 /** Writes the config from the project's agents, then hands the fitting to Claude. */
