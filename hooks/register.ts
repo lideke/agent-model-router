@@ -79,6 +79,8 @@ const appendJournal = ($: EngineInterface, cfg: Config, root: string, entry: obj
     if (!(await $.fs.exists(ignore))) await $.fs.write(ignore, '*\n')
     const old = (await $.fs.exists(path)) ? (await $.fs.read(path)).split('\n').filter(l => l.trim() !== '') : []
     old.push(JSON.stringify(entry))
+    // Checked again right before the write: the reads above leave time to swap in a link.
+    if (!(await staysInside($, root, cfg.journal.path))) throw new Error(`${cfg.journal.path} resolves outside the project`)
     await $.fs.write(path, `${old.slice(-cfg.journal.maxEntries).join('\n')}\n`)
   })
   journalQueue = run.catch(() => {})
@@ -249,8 +251,6 @@ export const register: Register = on => {
 const setFable = async ($: EngineInterface, loaded: Loaded, on: boolean): Promise<string> => {
   if (loaded.error) return `Fix the config first: ${loaded.error}`
   if (!loaded.config) return `No config yet. Run /${COMMAND} first.`
-  // A cloned project can make the config a link to a JSON file elsewhere: never write through it.
-  if (!(await staysInside($, await $.session.root(), CONFIG_PATH))) return `${loaded.path} resolves outside the project; not written.`
   if (on) {
     const probe = await $.model.complete({ model: FABLE, prompt: 'Reply with OK.', maxTokens: 5, timeoutMs: 30_000 }).catch(() => undefined)
     if (!probe || (!probe.isAnswered && probe.reason !== 'empty-reply')) {
@@ -259,7 +259,11 @@ const setFable = async ($: EngineInterface, loaded: Loaded, on: boolean): Promis
     }
   }
   try {
-    await $.fs.write(loaded.path, withTopModel(await $.fs.read(loaded.path), FABLE, on))
+    const text = withTopModel(await $.fs.read(loaded.path), FABLE, on)
+    // A cloned project can make the config a link to a JSON file elsewhere:
+    // checked last, right before the write, so the probe's wait opens no gap.
+    if (!(await staysInside($, await $.session.root(), CONFIG_PATH))) return `${loaded.path} resolves outside the project; not written.`
+    await $.fs.write(loaded.path, text)
   } catch (err) {
     return `Config unchanged: ${(err as Error).message}`
   }
@@ -271,9 +275,10 @@ const setFable = async ($: EngineInterface, loaded: Loaded, on: boolean): Promis
 /** Writes the config from the project's agents, then hands the fitting to Claude. */
 const create = async ($: EngineInterface, path: string): Promise<string> => {
   const root = await $.session.root()
-  if (!(await staysInside($, root, CONFIG_PATH))) return `${path} resolves outside the project; not written.`
   const agents = await projectAgents($, root)
-  await $.fs.write(path, `${JSON.stringify(starterConfig(agents), null, 2)}\n`)
+  const text = `${JSON.stringify(starterConfig(agents), null, 2)}\n`
+  if (!(await staysInside($, root, CONFIG_PATH))) return `${path} resolves outside the project; not written.`
+  await $.fs.write(path, text)
   // Without agents of its own there is nothing to fit: only built-in agents are routed.
   if (agents.length === 0) {
     return `Created ${path}. This project has no agents in .claude/agents/, so only the built-in agents Claude spawns are routed (Explore on haiku). The plugin pays off once the project has agents of its own: add them, then run /${COMMAND} again.`
