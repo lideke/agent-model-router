@@ -43,7 +43,46 @@ const str = (v: unknown, where: string): string => {
   return v.trim()
 }
 
+const MAX_PATTERN = 300
+
+/** Patterns are tested on at most this much text: a long prompt cannot stall a spawn. */
+export const MAX_TESTED = 20_000
+
+/**
+ * True when a group that holds a repetition or an alternative is itself
+ * repeated without bound (`(a+)+`, `(a|aa)*`, `(\d+){2,}`): the shapes whose
+ * matching can backtrack for ever on a long prompt.
+ */
+const canBacktrack = (pattern: string): boolean => {
+  const open: boolean[] = []
+  let risky = false
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i]
+    if (c === '\\') { i++; continue }
+    if (c === '[') {
+      for (i++; i < pattern.length && pattern[i] !== ']'; i++) if (pattern[i] === '\\') i++
+      continue
+    }
+    if (c === '(') { open.push(false); continue }
+    if (c === '|' && open.length) open[open.length - 1] = true
+    const unbounded = c === '+' || c === '*' || (c === '{' && /^\{\d+,\}/.test(pattern.slice(i)))
+    if (c === ')') {
+      const inner = open.pop() ?? false
+      const next = pattern.slice(i + 1)
+      if (inner && /^(?:[+*]|\{\d+,\})/.test(next)) risky = true
+      if (inner && open.length) open[open.length - 1] = true
+      continue
+    }
+    if (unbounded && open.length) open[open.length - 1] = true
+  }
+  return risky
+}
+
 const regex = (pattern: string, where: string): RegExp => {
+  if (pattern.length > MAX_PATTERN) throw new Error(`${where} is longer than ${MAX_PATTERN} characters`)
+  if (canBacktrack(pattern)) {
+    throw new Error(`${where} repeats a group that itself repeats or has alternatives, which can backtrack for ever: ${pattern}`)
+  }
   try {
     return new RegExp(pattern, 'i')
   } catch {
@@ -123,7 +162,7 @@ export const parseConfig = (text: string): Config => {
     journal: {
       enabled: jr.enabled !== false,
       path: journalPath,
-      maxEntries: typeof jr.maxEntries === 'number' && jr.maxEntries > 0 ? Math.floor(jr.maxEntries) : 5000,
+      maxEntries: typeof jr.maxEntries === 'number' && jr.maxEntries > 0 ? Math.floor(jr.maxEntries) : 1000,
     },
     notify: raw.notify !== false,
     context: Array.isArray(raw.context) ? raw.context.filter((c): c is string => typeof c === 'string') : [],
@@ -195,7 +234,7 @@ export const starterConfig = (agents: readonly AgentFile[]): object => {
     agents: table,
     tags: true,
     escalation: { enabled: true, windowMinutes: 240 },
-    journal: { enabled: true, path: JOURNAL_PATH, maxEntries: 5000 },
+    journal: { enabled: true, path: JOURNAL_PATH, maxEntries: 1000 },
     notify: true,
     context: [],
   }
@@ -212,7 +251,7 @@ const norm = (s: string): string => s.toLowerCase().replace(/\s+/g, ' ').trim()
 export const taskKeyOf = (facts: SpawnFacts, cfg: Config): string => {
   let part = norm(facts.description)
   if (cfg.escalation.taskKey) {
-    const m = regex(cfg.escalation.taskKey, 'escalation.taskKey').exec(`${facts.description}\n${facts.prompt}`)
+    const m = regex(cfg.escalation.taskKey, 'escalation.taskKey').exec(`${facts.description}\n${facts.prompt}`.slice(0, MAX_TESTED))
     if (m) part = norm(m[1] ?? m[0])
   }
   return `${facts.agent}|${part}`
@@ -238,7 +277,7 @@ export const prune = (raw: unknown, now: number, windowMinutes: number): Record<
  * attempt ran on (never for a tag). `maxModel` caps everything.
  */
 export const decide = (facts: SpawnFacts, cfg: Config, previous?: Attempt): Choice => {
-  const text = `${facts.description}\n${facts.prompt}`
+  const text = `${facts.description}\n${facts.prompt}`.slice(0, MAX_TESTED)
   const entry = entryFor(facts.agent, cfg)
   let choice: Choice = { source: 'default' }
 

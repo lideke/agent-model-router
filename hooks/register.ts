@@ -32,6 +32,8 @@ const loadConfig = async ($: EngineInterface): Promise<Loaded> => {
   const root = await $.session.root()
   const path = join(root, CONFIG_PATH)
   if (!(await $.fs.exists(path))) return { path }
+  // A cloned project can make the config a link to a file elsewhere: never route from it.
+  if (!(await staysInside($, root, CONFIG_PATH))) return { path, error: `${CONFIG_PATH} resolves outside the project` }
   try {
     return { path, config: parseConfig(await $.fs.read(path)) }
   } catch (err) {

@@ -395,6 +395,40 @@ describe('the journal stays inside the project', () => {
   })
 })
 
+describe('hardening', () => {
+  test('a pattern that can backtrack for ever is refused', () => {
+    for (const bad of ['(a+)+$', '(?:\\w*)*x', '(\\d+){2,}', '(a|aa)+b']) {
+      expect(() => parseConfig(JSON.stringify({ agents: { w: { rules: [{ match: bad, model: 'opus' }] } } }))).toThrow('backtrack')
+      expect(() => parseConfig(JSON.stringify({ escalation: { taskKey: bad } }))).toThrow('backtrack')
+    }
+  })
+
+  test('a pattern longer than 300 characters is refused', () => {
+    expect(() => parseConfig(JSON.stringify({ escalation: { taskKey: 'a'.repeat(301) } }))).toThrow('300')
+  })
+
+  test('real patterns still pass', () => {
+    const cfg = parseConfig(JSON.stringify({
+      agents: { writer: { rules: [{ match: "(?:écri|réécri)\\w*\\s+(?:l['’]\\s*(?:intro|outro)|le\\s+bloc\\s*1(?!\\d))", model: 'opus' }] } },
+      escalation: { taskKey: 'bloc\\s*#?\\d+|intro|outro' },
+    }))
+    expect(cfg.agents.writer?.rules.length).toBe(1)
+    expect(parseConfig(JSON.stringify({ escalation: { taskKey: '(?:task|step|block)\\s*#?\\d+' } })).escalation.taskKey).toBeDefined()
+  })
+
+  test('the journal keeps 1000 entries by default', () => {
+    expect(parseConfig('{}').journal.maxEntries).toBe(1000)
+  })
+
+  test('a config linked to a file outside the project turns routing off', async ($, on) => {
+    const w = world(on, BASE)
+    w.links.set(CONFIG, '/home/me/other.json')
+    await $.agent.spawn(call({ subagentType: 'writer', prompt: 'Write block 20', description: 'b' }))
+    expect(w.spawned).toEqual([undefined])
+    expect(w.toasts[0]).toContain('resolves outside the project')
+  })
+})
+
 describe('pure rules', () => {
   test('full model ids land on their rung', () => {
     const ladder = ['haiku', 'sonnet', 'opus']

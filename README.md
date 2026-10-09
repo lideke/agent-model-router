@@ -75,7 +75,7 @@ Claude Code asks your permission before Claude edits a file under `.claude/`; ac
     "*": { "model": "sonnet" }
   },
   "escalation": { "enabled": true, "taskKey": "(?:task|step)\\s*#?\\d+", "windowMinutes": 240 },
-  "journal": { "enabled": true, "path": ".claude/agent-model-router/journal.jsonl", "maxEntries": 5000 },
+  "journal": { "enabled": true, "path": ".claude/agent-model-router/journal.jsonl", "maxEntries": 1000 },
   "tags": true,
   "notify": true,
   "context": ["docs/reviews/*.md"]
@@ -92,6 +92,7 @@ Claude Code asks your permission before Claude edits a file under `.claude/`; ac
 | `agents["*"]` | Entry for agents not listed | none |
 | `escalation.taskKey` | Regular expression that identifies "the same task" in the description or prompt. Without it, the task description is the key | none |
 | `escalation.windowMinutes` | How long a task is remembered for retry detection | `240` |
+| `journal.maxEntries` | Lines kept in the journal; the oldest go first. The whole file is rewritten on each spawn (the plugin API has no append), so keep it modest. 1000 lines is about 250 KB and plenty for the tuner | `1000` |
 | `journal.path` | Where decisions are logged: a relative path under `.claude/`, no `..`. Any other value turns routing off, and the plugin never writes through a symbolic link that leads outside the project | `.claude/agent-model-router/journal.jsonl` |
 | `tags` | Honour `[model: <name>]` written in a delegation prompt | `true` |
 | `notify` | Show a toast when the plugin changes a model | `true` |
@@ -211,6 +212,8 @@ The journal stores task descriptions, agent names and models, never prompts. Its
 - Retry detection is a proxy for failure. A task re-sent for another reason (new scope) also escalates. Set `taskKey` so distinct tasks get distinct keys.
 - Rules match the prompt as Claude Code passes it to the subagent, which can include text added by the engine. Keep patterns specific.
 - Retry history lives in the plugin's store across sessions, keyed by project root and pruned after `windowMinutes`.
+- Patterns (`rules[].match`, `escalation.taskKey`) are capped at 300 characters, and a pattern that repeats a group which itself repeats or has alternatives (`(a+)+`, `(a|b)*`) is refused: on a long prompt such a pattern can take forever to match. Patterns are tested on the first 20,000 characters of the description and prompt.
+- The plugin never reads or writes its config or journal through a symbolic link that leads outside the project: such a config turns routing off.
 
 ## Development
 
