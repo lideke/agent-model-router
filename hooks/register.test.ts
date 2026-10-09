@@ -260,21 +260,45 @@ describe('/model-router init', () => {
     expect(w.prompts).toEqual([])
   })
 
-  test('an existing config is never overwritten; adjust refits it', async ($, on) => {
+  test('with a config, /model-router shows it and fits it again', async ($, on) => {
     const w = world(on, BASE)
+    w.files.set(`${ROOT}/.claude/agents/writer.md`, agent('writer', 'sonnet'))
     const before = w.files.get(CONFIG)
-    const r = await $.command.run({ command: 'model-router', args: 'init' })
-    expect(r.text).toContain('adjust')
+    const r = await $.command.run({ command: 'model-router', args: '' })
+    expect(r.text).toContain('Routing: on')
+    expect(r.text).toContain('Claude now fits')
     expect(w.files.get(CONFIG)).toBe(before)
-    await $.command.run({ command: 'model-router', args: 'adjust' })
     await settle(w)
     expect(w.prompts).toEqual(['ADJUST THE CONFIG'])
   })
 
-  test('adjust without a config asks for init first', async ($, on) => {
+  test('without a config, /model-router creates it, then fits it', async ($, on) => {
     const w = world(on)
-    const r = await $.command.run({ command: 'model-router', args: 'adjust' })
-    expect(r.text).toContain('init')
+    w.files.set(`${ROOT}/.claude/agents/writer.md`, agent('writer', 'sonnet'))
+    const r = await $.command.run({ command: 'model-router', args: '' })
+    expect(r.text).toContain('Created')
+    expect(parseConfig(w.files.get(CONFIG) ?? '').agents.writer?.model).toBe('sonnet')
+    await settle(w)
+    expect(w.prompts).toEqual(['ADJUST THE CONFIG'])
+  })
+
+  test('status only shows, and init never overwrites', async ($, on) => {
+    const w = world(on, BASE)
+    w.files.set(`${ROOT}/.claude/agents/writer.md`, agent('writer', 'sonnet'))
+    const before = w.files.get(CONFIG)
+    const shown = await $.command.run({ command: 'model-router', args: 'status' })
+    expect(shown.text).toContain('Routing: on')
+    const again = await $.command.run({ command: 'model-router', args: 'init' })
+    expect(again.text).toContain('already exists')
+    expect(w.files.get(CONFIG)).toBe(before)
+    await settle(w)
+    expect(w.prompts).toEqual([])
+  })
+
+  test('with a config but no agents there is nothing to fit', async ($, on) => {
+    const w = world(on, BASE)
+    const r = await $.command.run({ command: 'model-router', args: '' })
+    expect(r.text).toContain('nothing to fit')
     await settle(w)
     expect(w.prompts).toEqual([])
   })

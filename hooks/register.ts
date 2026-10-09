@@ -143,8 +143,8 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'model-router',
-      description: 'Show agent-model-router status; "init" creates the config, "adjust" fits it to this project',
-      argumentHint: '[status|init|adjust]',
+      description: 'Create or fit the agent-model-router config to this project; "status" only shows it',
+      argumentHint: '[status]',
     })
     return next(e)
   })
@@ -214,66 +214,77 @@ export const register: Register = on => {
 
   on('command.run', { command: 'model-router' }, async ($, e) => {
     const loaded = await loadConfig($)
-
     const arg = e.args.trim()
-    if (arg === 'init') {
-      if (loaded.config || loaded.error) return { text: `${loaded.path} already exists. Run /${COMMAND} adjust to fit it to this project.` }
-      const root = await $.session.root()
-      if (!(await staysInside($, root, CONFIG_PATH))) return { text: `${loaded.path} resolves outside the project; not written.` }
-      const agents = await projectAgents($, root)
-      await $.fs.write(loaded.path, `${JSON.stringify(starterConfig(agents), null, 2)}\n`)
-      // Without agents of its own there is nothing to fit: only built-in agents are routed.
-      if (agents.length === 0) {
-        return {
-          text: `Created ${loaded.path}. This project has no agents in .claude/agents/, so only the built-in agents Claude spawns are routed (Explore on haiku). The plugin pays off once the project has agents of its own: add them, then run /${COMMAND} adjust.`,
-        }
-      }
-      const names = ['Explore', ...agents.map(a => a.name)].join(', ')
-      const adjusting = await adjust($)
-      return {
-        text: `Created ${loaded.path} with ${names}. Routing is on.${adjusting
-          ? ' Claude now fits task names, rules and context to this project.'
-          : ` Run /${COMMAND} adjust in an interactive session to fit it to this project.`}`,
-      }
-    }
 
-    if (arg === 'adjust') {
-      if (!loaded.config && !loaded.error) return { text: `No config yet. Run /${COMMAND} init first.` }
-      return { text: (await adjust($)) ? `Claude now fits ${loaded.path} to this project.` : 'Could not start the adjustment here; run it in an interactive session.' }
-    }
+    if (arg === 'status') return { text: (await status($, loaded)).join('\n') }
 
-    const lines = [`agent-model-router: ${loaded.path}`]
-    const cfg = loaded.config
-    if (loaded.error) lines.push(`Config error, routing is off: ${loaded.error}`)
-    else if (!cfg) lines.push(`No config, routing is off. Run /${COMMAND} init to create one.`)
-    else {
-      lines.push(`Routing: ${cfg.enabled ? 'on' : 'off (enabled: false)'}`)
-      lines.push(`Ladder: ${cfg.ladder.join(' < ')}${cfg.maxModel ? `, capped at ${cfg.maxModel}` : ''}`)
-      lines.push(`Escalation on retry: ${cfg.escalation.enabled ? `on, within ${cfg.escalation.windowMinutes} min` : 'off'}`)
-      for (const [name, entry] of Object.entries(cfg.agents)) {
-        const rules = entry.rules.length ? `, ${entry.rules.length} rule(s)` : ''
-        lines.push(`  ${name}: ${entry.model ?? 'agent default'}${rules}`)
-      }
-      const now = await $.clock.now()
-      const root = await $.session.root()
-      const attempts = prune(await $.store.get(ATTEMPTS), now, cfg.escalation.windowMinutes)
-      const tracked = Object.keys(attempts).filter(k => k.startsWith(scoped(root, ''))).length
-      lines.push(`Tasks tracked for retry: ${tracked}`)
+    // No config yet: create it from the project's agents, then fit it.
+    if (!loaded.config && !loaded.error) return { text: await create($, loaded.path) }
+    if (arg === 'init') return { text: `${loaded.path} already exists. Run /${COMMAND} to fit it to this project.` }
 
-      const journal = join(root, cfg.journal.path)
-      if (cfg.journal.enabled && (await $.fs.exists(journal)) && (await staysInside($, root, cfg.journal.path))) {
-        const last = (await $.fs.read(journal)).split('\n').filter(l => l.trim() !== '').slice(-10)
-        lines.push('Last decisions:')
-        for (const l of last) {
-          try {
-            const j = JSON.parse(l) as Record<string, unknown>
-            lines.push(`  ${String(j.ts).slice(0, 16)} ${short(String(j.agent))} → ${String(j.resolved)} (${String(j.source)}, attempt ${String(j.attempt)})`)
-          } catch {
-            // a hand-edited line: skip it
-          }
-        }
-      }
+    // Default: show the config, then have Claude fit it to the project as it is now.
+    const lines = arg === 'adjust' ? [] : await status($, loaded)
+    const root = await $.session.root()
+    if ((await projectAgents($, root)).length === 0) {
+      lines.push(`No agents in .claude/agents/: nothing to fit. Only built-in agents are routed.`)
+    } else {
+      lines.push((await adjust($))
+        ? `Claude now fits ${loaded.path} to this project. Run /${COMMAND} status to see the config alone.`
+        : 'Could not start the fitting here; run it in an interactive session.')
     }
     return { text: lines.join('\n') }
   })
+}
+
+/** Writes the config from the project's agents, then hands the fitting to Claude. */
+const create = async ($: EngineInterface, path: string): Promise<string> => {
+  const root = await $.session.root()
+  if (!(await staysInside($, root, CONFIG_PATH))) return `${path} resolves outside the project; not written.`
+  const agents = await projectAgents($, root)
+  await $.fs.write(path, `${JSON.stringify(starterConfig(agents), null, 2)}\n`)
+  // Without agents of its own there is nothing to fit: only built-in agents are routed.
+  if (agents.length === 0) {
+    return `Created ${path}. This project has no agents in .claude/agents/, so only the built-in agents Claude spawns are routed (Explore on haiku). The plugin pays off once the project has agents of its own: add them, then run /${COMMAND} again.`
+  }
+  const names = ['Explore', ...agents.map(a => a.name)].join(', ')
+  return `Created ${path} with ${names}. Routing is on.${(await adjust($))
+    ? ' Claude now fits task names, rules and context to this project.'
+    : ` Run /${COMMAND} in an interactive session to fit it to this project.`}`
+}
+
+/** The active config, the retry history and the last decisions, one line each. */
+const status = async ($: EngineInterface, loaded: Loaded): Promise<string[]> => {
+  const lines = [`agent-model-router: ${loaded.path}`]
+  const cfg = loaded.config
+  if (loaded.error) lines.push(`Config error, routing is off: ${loaded.error}`)
+  else if (!cfg) lines.push(`No config, routing is off. Run /${COMMAND} to create one.`)
+  else {
+    lines.push(`Routing: ${cfg.enabled ? 'on' : 'off (enabled: false)'}`)
+    lines.push(`Ladder: ${cfg.ladder.join(' < ')}${cfg.maxModel ? `, capped at ${cfg.maxModel}` : ''}`)
+    lines.push(`Escalation on retry: ${cfg.escalation.enabled ? `on, within ${cfg.escalation.windowMinutes} min` : 'off'}`)
+    for (const [name, entry] of Object.entries(cfg.agents)) {
+      const rules = entry.rules.length ? `, ${entry.rules.length} rule(s)` : ''
+      lines.push(`  ${name}: ${entry.model ?? 'agent default'}${rules}`)
+    }
+    const now = await $.clock.now()
+    const root = await $.session.root()
+    const attempts = prune(await $.store.get(ATTEMPTS), now, cfg.escalation.windowMinutes)
+    const tracked = Object.keys(attempts).filter(k => k.startsWith(scoped(root, ''))).length
+    lines.push(`Tasks tracked for retry: ${tracked}`)
+
+    const journal = join(root, cfg.journal.path)
+    if (cfg.journal.enabled && (await $.fs.exists(journal)) && (await staysInside($, root, cfg.journal.path))) {
+      const last = (await $.fs.read(journal)).split('\n').filter(l => l.trim() !== '').slice(-10)
+      lines.push('Last decisions:')
+      for (const l of last) {
+        try {
+          const j = JSON.parse(l) as Record<string, unknown>
+          lines.push(`  ${String(j.ts).slice(0, 16)} ${short(String(j.agent))} → ${String(j.resolved)} (${String(j.source)}, attempt ${String(j.attempt)})`)
+        } catch {
+          // a hand-edited line: skip it
+        }
+      }
+    }
+  }
+  return lines
 }
