@@ -140,36 +140,59 @@ Turn it off with `/model-router fable off`: `fable` leaves the ladder and the ca
 
 ## How a retry is recognized
 
-You do not write delegations; Claude does. When the main session hands work to a subagent, it calls the Agent tool with two texts:
+### The idea
 
-- `description`: a title of a few words, such as `Block 3 episode 2`;
-- `prompt`: the full instructions, which often repeat context such as the list of tasks already done.
+When a subagent's work fails review, Claude usually sends the same task to the same agent again. The plugin treats that second send as a sign the model was too weak, and runs it one model higher.
 
-The plugin computes a task key for each spawn:
+To do that, it must recognize "the same task". Example, in a project that writes a video script block by block:
 
-1. With `escalation.taskKey`, the key is the **first** match of that pattern, searched in the `description` first, then in the `prompt`.
-2. With no match, or no `taskKey`, the key is the whole `description`.
+1. Claude asks `writer` for **block 3**. It runs on `sonnet`.
+2. The review rejects it. Claude asks `writer` for **block 3** again. The plugin sees block 3 a second time and runs it on `opus`.
+3. Claude asks `writer` for **block 4**. New task: back to `sonnet`.
 
-The key is prefixed with the agent name. Two spawns with the same key, inside `windowMinutes`, count as a retry: the second runs one model higher.
+### How the plugin names a task
 
-The key is only as good as the `description`. With `"taskKey": "block\\s*\\d+"`:
+Each time Claude delegates, it fills two fields of the Agent tool. You never write them yourself:
 
-| Delegation | Key | Result |
+| Field | What it holds | Example |
 |---|---|---|
-| description `Block 3 episode 2` | `writer\|block 3` | Correct |
-| description `Write narration`, prompt `Done so far: Block 1, Block 2. Now write Block 3.` | `writer\|block 1` | Wrong: the first match in the prompt is a finished task. A later spawn about block 1 escalates for no reason |
-| description `Write narration`, no match in the prompt | `writer\|write narration` | Every writer spawn looks like the same task, so all but the first escalate |
+| `description` | A short title, a few words | `Episode 2 block 3` |
+| `prompt` | The full instructions, often with context such as the tasks already done | `Block 1 and block 2 are approved. Write block 3 ...` |
 
-So tell Claude to put the task name in the `description`. Add a line such as this one to your project's `CLAUDE.md`, next to its delegation rules:
+The plugin turns each delegation into a task name:
 
-> The `description` of each Agent call names the task and its scope, for example `Block 3 episode 2`.
+- If the config has `escalation.taskKey` (a pattern such as `block\\s*\\d+`), the task name is the first text that matches it, looked for in the `description` first, then in the `prompt`.
+- Otherwise, or when nothing matches, the task name is the whole `description`.
 
-Things to watch:
+The same agent receiving the same task name again within `windowMinutes` (4 hours by default) is a retry.
 
-- **Same names in two scopes.** `Block 3` of episode 1 and `Block 3` of episode 2 share a key. Working on both within `windowMinutes` makes the second one escalate. Shorten the window, or put the scope in the pattern (`episode\\s*\\d+\\s*block\\s*\\d+`) and in the descriptions.
-- **Rules read the prompt too.** A rule matches the description and the prompt together, so a word that appears in the repeated context (`intro` in a list of finished blocks) triggers it on every spawn. Match a phrase that only appears in the request itself (`write the intro`).
-- **Accented words.** In JavaScript regular expressions, `\b` only knows ASCII letters: `\bécris` never matches. Leave out `\b` before or after an accented letter.
-- **Check the keys.** Each journal line has a `task` field. After a few delegations, read `.claude/agent-model-router/journal.jsonl` and check that each task got its own key.
+### Why the description matters
+
+The pattern is looked for in the `description` first. When the description names the task, the result is right. When it does not, the plugin falls back on the `prompt`, which often mentions other tasks first.
+
+With `"taskKey": "block\\s*\\d+"`, asking `writer` for block 3:
+
+| `description` Claude wrote | Task name | Outcome |
+|---|---|---|
+| `Episode 2 block 3` | `block 3` | Right |
+| `Write narration` (the prompt starts with "Block 1 and block 2 are approved") | `block 1` | Wrong task: a real retry of block 3 is missed, and a later request about block 1 is taken for a retry |
+| `Write narration` (no block number in the prompt) | `write narration` | Every request to `writer` has the same name: each one after the first is taken for a retry |
+
+So Claude must name the task in the `description`. You do not have to do it by hand: `/model-router` proposes a line for your `CLAUDE.md`, such as
+
+> The `description` of each Agent call names the task and its scope, for example `Episode 2 block 3`.
+
+and adds it once you accept.
+
+### Check it
+
+Each line of `.claude/agent-model-router/journal.jsonl` has a `task` field: the agent and the task name. After a few delegations, read it. Each distinct task should have its own name, and a retry should show `"attempt": 2`.
+
+### Pitfalls
+
+- **The same task name in two places.** `block 3` of episode 1 and `block 3` of episode 2 get the same name. If you work on both within 4 hours, the second looks like a retry. Either lower `windowMinutes`, or put the episode in the pattern and in the descriptions: `"taskKey": "episode\\s*\\d+\\s*block\\s*\\d+"` with descriptions such as `Episode 2 block 3`.
+- **Rules see the whole prompt.** This one is about `rules`, not retries: a rule is tested on the description and the prompt together. A word that sits in the repeated context, such as `intro` in a list of approved blocks, triggers the rule on every request. Match a phrase that only appears in the request itself, such as `write the intro`.
+- **Accented letters.** In these patterns, `\b` (word boundary) only knows the letters a to z. `\bécris` never matches. Do not put `\b` next to an accented letter.
 
 ## Tuning the table
 
